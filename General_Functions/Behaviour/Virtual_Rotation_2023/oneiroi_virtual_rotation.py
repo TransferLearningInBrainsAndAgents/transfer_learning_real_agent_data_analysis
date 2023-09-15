@@ -1,52 +1,16 @@
 import os
 import pickle
-from os import listdir
 from typing import List
 
 import numpy as np
 import pandas as pd
 from os.path import join
-from datetime import datetime
 
-
-def get_trials_df(folder):
-    print(folder)
-    trials_file_name = [i for i in listdir(folder) if 'trials' in i][0]
-    f = join(folder, trials_file_name)
-    df = pd.read_pickle(f)
-
-    return df
-
-
-def get_rotation_task_df(folder):
-    file = join(folder, 'Rotation_Task_V1##0', 'Substate.df')
-    return pd.read_pickle(file)
-
-
-def get_levers_df(folder):
-    file = join(folder, 'TL_Levers##0', 'Substate.df')
-    return pd.read_pickle(file)
-
-
-def get_folders_to_work_with(base_folder, start_date, end_date, rat, mark_at: List) -> tuple[List[str], List[int]]:
-    rat = rat
-    all_folders: List[str] = os.listdir(join(base_folder, rat))
-    start_day = datetime.strptime(start_date, '%Y_%m_%d').timetuple().tm_yday
-    end_day = datetime.strptime(end_date, '%Y_%m_%d').timetuple().tm_yday
-    mark_days = [datetime.strptime(ma, '%Y_%m_%d').timetuple().tm_yday for ma in mark_at]
-    days_done = np.array([datetime.strptime(i.split('-')[0], '%Y_%m_%d').timetuple().tm_yday
-                          for i in all_folders])
-
-    folders_to_check = os.listdir(join(base_folder, rat))[slice(np.argwhere(days_done == start_day)[0][0],
-                                                                np.argwhere(days_done == end_day)[0][0] + 1)]
-    idx_of_marked_folder = [np.argwhere(np.array(folders_to_check) ==
-                                       all_folders[np.argwhere(days_done == md)[0][0]])[0][0] for md in mark_days]
-
-    return folders_to_check, idx_of_marked_folder
+import General_Functions.Behaviour.File_Functions.general_file_functions as gff
 
 
 def get_ratio_of_successful_over_total_trials_in_folders(base_folder, start_date, end_date, rat, mark_at):
-    folders_to_check, mark_index = get_folders_to_work_with(base_folder=base_folder, start_date=start_date,
+    folders_to_check, mark_index = gff.get_folders_to_work_with(base_folder=base_folder, start_date=start_date,
                                                             end_date=end_date, rat=rat, mark_at=mark_at)
 
     ratios = []
@@ -54,8 +18,8 @@ def get_ratio_of_successful_over_total_trials_in_folders(base_folder, start_date
     for date_time in folders_to_check:
 
         exp_folder = join(base_folder, rat, date_time)
-        trials_df, experiment_df, levers_df = get_trials_df(exp_folder), get_rotation_task_df(exp_folder), \
-            get_levers_df(exp_folder)
+        trials_df, experiment_df, levers_df = gff.get_trials_df(exp_folder), gff.get_rotation_task_df(exp_folder), \
+            gff.get_levers_df(exp_folder)
 
         succesful_trials = pd.concat((trials_df.iloc[np.where(trials_df['Start_OR_PelletsGiven'] == 2)],
                                       trials_df.iloc[np.where(trials_df['Start_OR_PelletsGiven'] == 3)],
@@ -120,53 +84,89 @@ def get_trials_info(experiment_df, levers_df):
                 except:
                     break
             if 'GotReward' in trial_state:
-                result = True
+                result = 'Succeeded Rewarded'
             elif 'Fail' in trial_state or 'PunishPeriod' in trial_state:
-                result = False
+                result = 'Failed'
             elif 'LostReward' in trial_state:
-                result = False
+                result = 'Succeeded'
 
             target_time = experiment_df.loc[i, 'time_to_target']
             poke_dt = poke_out_time - poke_in_time
             time_error = (poke_dt.seconds + poke_dt.microseconds / 1e6) + 0.4 - target_time
+            man_speed = 10.0
+            if 'speed' in experiment_df.columns:
+                man_speed = experiment_df.loc[i, 'speed'] * 10
+
+            catch_trial = False
+            if 'catch_trial' in experiment_df.columns:
+                catch_trial = experiment_df.loc[i, 'catch_trial']
 
             trials_info.append((i, poke_in_time, closest_index_in_experiment_df, poke_out_time,
-                                time_error, target_time, result))
+                                time_error, target_time, result, man_speed, catch_trial))
 
     trials_info = pd.DataFrame(trials_info, columns=['poke_in_index', 'poke_in_time', 'poke_out_index', 'poke_out_time',
-                                                     'time_error', 'target_time', 'success_fail'])
+                                                     'time_error', 'target_time', 'success_fail', 'manipulandum_speed',
+                                                     'catch_trial'])
     return trials_info
 
 
 def get_ratio_of_successes_over_all_trials(trials_info):
-    successes = trials_info[trials_info['success_fail'] == True]
+    successes = trials_info[np.logical_or(np.array(trials_info['success_fail'] == 'Succeeded Rewarded'),
+                                          np.array(trials_info['success_fail'] == 'Succeeded Rewarded'))]
     return len(successes) / len(trials_info)
 
 
-def get_ratio_of_just_missed_over_all_missed(trials_info, time_for_10_degrees):
+def get_ratio_of_successful_over_catch_trials(trials_info):
+    catch_trials = trials_info[trials_info['catch_trial'] == True]
+    if len(catch_trials) > 0:
+        return get_ratio_of_successes_over_all_trials(catch_trials)
+    else:
+        return np.nan
 
-        all_missed = trials_info[trials_info['success_fail'] == False].reset_index()
-        just_missed = all_missed[np.abs(all_missed['time_error']) < time_for_10_degrees]
 
-        ratio = len(just_missed) / len(all_missed)
+def get_ratio_of_successes_over_running_window(trials_info, window_size):
+    num_windows = int(len(trials_info) / window_size)
+    if len(trials_info) % window_size > 0:
+        num_windows += 1
 
-        return ratio
+    result = []
+    for i in range(num_windows -1):
+        window = trials_info[i * window_size : (i+1) * window_size]
+        result.append(get_ratio_of_successes_over_all_trials(window))
+
+    return result
+
+
+def get_ratio_of_just_missed_over_all_missed(trials_info):
+
+    man_rot_speed = trials_info['manipulandum_speed'] / 1.25
+    time_for_10_degrees = man_rot_speed / 7
+
+    all_missed = trials_info[trials_info['success_fail'] == 'Failed'].reset_index()
+    time_for_10_degrees = time_for_10_degrees[all_missed.index]
+
+    just_missed_mask = [np.abs(all_missed.loc[i, 'time_error']) < time_for_10_degrees[i] for i in range(len(all_missed))]
+    just_missed = all_missed[just_missed_mask]
+
+    ratio = len(just_missed) / len(all_missed)
+
+    return ratio
 
 
 def get_reaction_time(trials_info):
-    df = trials_info[trials_info['success_fail'] == True]
+    df = trials_info[trials_info['success_fail'] == 'Succeeded Rewarded']
     df2 = df[df['time_error'] > -0.3]
     return df2['time_error'].to_numpy()
 
 
 def get_fast_trials_time_errors(trials_info):
-    df = trials_info[trials_info['success_fail'] == False]
+    df = trials_info[trials_info['success_fail'] == 'Failed']
     df2 = df[df['time_error'] < 0]
     return df2['time_error'].to_numpy()
 
 
 def get_slow_trials_time_errors(trials_info):
-    df = trials_info[trials_info['success_fail'] == False]
+    df = trials_info[trials_info['success_fail'] == 'Succeeded']
     df2 = df[df['time_error'] > 0]
     return df2['time_error'].to_numpy()
 
@@ -192,7 +192,8 @@ def update_all_trials_info(base_folder, folders_to_check, end_date, rat):
         with open(file_name, 'rb') as f:
             all_trials_info = pickle.load(f)
 
-        if any([end_date in key for key in all_trials_info.keys()]):
+        ed = '{}_{}'.format(end_date.split('_')[1], end_date.split('_')[2])
+        if any([ed in key for key in all_trials_info.keys()]):
             return all_trials_info
         else:
             while any([folders_to_check[start_date_index] in key for key in all_trials_info.keys()]):
@@ -205,7 +206,7 @@ def update_all_trials_info(base_folder, folders_to_check, end_date, rat):
         date_time = all_folders[np.argwhere([date in dt for dt in all_folders])[0][0]]
         print(date_time)
         exp_folder = join(base_folder, rat, date_time)
-        experiment_df, levers_df = get_rotation_task_df(exp_folder), get_levers_df(exp_folder)
+        experiment_df, levers_df = gff.get_rotation_task_df(exp_folder), gff.get_levers_df(exp_folder)
 
         trials_info = get_trials_info(experiment_df, levers_df)
         all_trials_info[date] = trials_info
@@ -216,10 +217,11 @@ def update_all_trials_info(base_folder, folders_to_check, end_date, rat):
     return all_trials_info
 
 
-def get_some_stats(all_trials_infos, folders_to_check, time_for_10_degrees):
+def get_some_stats(all_trials_infos, folders_to_check):
 
     ratios_correct = []
     ratios_just_missed = []
+    ratios_catch_trials = []
     reaction_times = []
     fast_trials_time_errors = []
     slow_trials_time_errors = []
@@ -228,7 +230,8 @@ def get_some_stats(all_trials_infos, folders_to_check, time_for_10_degrees):
         trials_info = all_trials_infos[date_time]
 
         ratio_correct = get_ratio_of_successes_over_all_trials(trials_info)
-        ratio_just_missed = get_ratio_of_just_missed_over_all_missed(trials_info, time_for_10_degrees)
+        ratio_just_missed = get_ratio_of_just_missed_over_all_missed(trials_info)
+        ratio_catch_trials = get_ratio_of_successful_over_catch_trials(trials_info)
         reaction_time = get_reaction_time(trials_info)
         fast_trials_time_error = get_fast_trials_time_errors(trials_info)
         slow_tirals_time_error = get_slow_trials_time_errors(trials_info)
@@ -236,10 +239,11 @@ def get_some_stats(all_trials_infos, folders_to_check, time_for_10_degrees):
 
         ratios_correct.append(ratio_correct)
         ratios_just_missed.append(ratio_just_missed)
+        ratios_catch_trials.append(ratio_catch_trials)
         reaction_times.append(reaction_time)
         fast_trials_time_errors.append(fast_trials_time_error)
         slow_trials_time_errors.append(slow_tirals_time_error)
         poking_times.append(poking_time)
 
-    return ratios_correct, ratios_just_missed, reaction_times, fast_trials_time_errors,\
+    return ratios_correct, ratios_just_missed, ratios_catch_trials, reaction_times, fast_trials_time_errors,\
         slow_trials_time_errors, poking_times
