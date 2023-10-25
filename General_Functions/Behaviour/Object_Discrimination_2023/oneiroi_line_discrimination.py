@@ -163,7 +163,7 @@ def update_all_trials_info(base_folder, experiment_folder, folders_to_check, end
 
     all_folders: List[str] = os.listdir(os.path.join(base_folder, rat, experiment_folder))
     for date in folders_to_check[start_date_index:]:
-        date_time = all_folders[np.argwhere([date in dt for dt in all_folders])[0][0]]
+        date_time = all_folders[np.argwhere([date in dt.split('-')[0] for dt in all_folders])[0][0]]
         print(date_time)
         exp_folder = os.path.join(base_folder, rat, experiment_folder, date_time)
         experiment_df = gff.get_discrimination_task_df(exp_folder)
